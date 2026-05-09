@@ -38,7 +38,6 @@ struct DNSQuestion {
 impl DNSQuestion {
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = self.name.clone();
-        bytes.push(0);
         bytes.push((self.qtype >> 8) as u8);
         bytes.push(self.qtype as u8);
         bytes.push((self.qclass >> 8) as u8);
@@ -59,7 +58,6 @@ struct DNSAnswer {
 impl DNSAnswer {
     fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = self.name.clone();
-        bytes.push(0);
         bytes.push((self.rtype >> 8) as u8);
         bytes.push(self.rtype as u8);
         bytes.push((self.rclass >> 8) as u8);
@@ -78,14 +76,6 @@ impl DNSAnswer {
     }
 }
 
-// struct DNSResponse {
-//     header: DNSHeader,
-//     question: DNSQuestion,
-//     // answers: Vec<DNSAnswer>,
-//     // authorities: Vec<DNSAuthority>,
-//     // additional: Vec<DNSAdditional>,
-// }
-
 fn get_header(buf: &[u8]) -> DNSHeader {
     let header = DNSHeader {
         id: u16::from_be_bytes([buf[0], buf[1]]),
@@ -98,57 +88,68 @@ fn get_header(buf: &[u8]) -> DNSHeader {
     header
 }
 
-fn get_question(buf: &[u8]) -> DNSQuestion {
-    if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
-        let name = &buf[..null_pos];
-        DNSQuestion {
-            name: name.to_vec(),
-            qtype: u16::from_be_bytes([buf[null_pos + 1], buf[null_pos + 2]]),
-            qclass: u16::from_be_bytes([buf[null_pos + 3], buf[null_pos + 4]]),
-        }
-    } else {
-        DNSQuestion {
-            name: buf.to_vec(),
-            qtype: 0,
-            qclass: 0,
+fn read_name(packet: &[u8], mut offset: usize) -> (Vec<u8>, usize) {
+    let mut name = Vec::new();
+    let start_offset = offset;
+
+    loop {
+        let byte = packet[offset];
+
+        if byte == 0 {
+            // End of name
+            offset += 1;
+            name.push(0);
+            break;
+        } else if byte >= 0xC0 {
+            // Pointer: 2 bytes, upper 2 bits are 11, remaining 14 bits are offset
+            let second_byte = packet[offset + 1];
+            let pointer_offset = (((byte as u16) & 0x3F) << 8) | (second_byte as u16);
+            offset += 2;
+            
+            // Recursively read the name from the pointer target
+            let (followed_name, _) = read_name(packet, pointer_offset as usize);
+            name.extend(followed_name);
+            break;
+        } else {
+            // Normal label: length byte followed by that many bytes
+            let length = byte as usize;
+            name.push(length as u8);
+            name.extend_from_slice(&packet[offset + 1..offset + 1 + length]);
+            offset += 1 + length;
         }
     }
+
+    (name, offset - start_offset)
 }
 
-fn get_answer(buf: &[u8]) -> DNSAnswer {
-    if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
-        let name = &buf[..null_pos];
-        let ip = [127, 0, 0, 1];
-        DNSAnswer {
-            name: name.to_vec(),
-            rtype: 1,
-            rclass: 1,
-            ttl: 60,
-            length: ip.len() as u16,
-            rdata: u32::from_be_bytes(ip)
-        }
-    } else {
-        DNSAnswer {
-            name: buf.to_vec(),
-            rtype: 0,
-            rclass: 0,
-            ttl: 0,
-            length: 0,
-            rdata: 0,
-        }
-    }
+fn get_question(packet: &[u8], offset: usize) -> (DNSQuestion, usize) {
+    let (name, name_consumed) = read_name(packet, offset);
+    let qtype = u16::from_be_bytes([
+        packet[offset + name_consumed],
+        packet[offset + name_consumed + 1],
+    ]);
+    let qclass = u16::from_be_bytes([
+        packet[offset + name_consumed + 2],
+        packet[offset + name_consumed + 3],
+    ]);
+    let total_consumed = name_consumed + 4;
+
+    (
+        DNSQuestion { name, qtype, qclass },
+        total_consumed,
+    )
 }
 
-fn set_response_bits(response: &mut [u8]) {
+fn set_response_bits(response: &mut [u8], question_count: u16) {
     // Set QR bit to 1 (response) and RCODE to 4 (not implemented)
     response[2] |= 0x80;
-    response[3] |= 0x04;
+    response[3] = (response[3] & 0xF0) | 0x04;
     // Set QDCOUNT to 1 (one question)
     response[4] &= 0xFF;
-    response[5] |= 0x01;
+    response[5] |= question_count as u8;
     // Set ANCOUNT to 1 (one answer)
     response[6] &= 0xFF;
-    response[7] |= 0x01;
+    response[7] |= question_count as u8;
 }
 
 fn main() {
@@ -161,17 +162,36 @@ fn main() {
     loop {
         match udp_socket.recv_from(&mut buf) {
             Ok((size, source)) => {
-                let mut response = vec![];
+                let mut response: Vec<u8> = Vec::new();
                 // Check if the request is a DNS query
                 if buf[2] & 0x80 == 0 {
-                    let header = get_header(&buf[..12]).to_bytes();
-                    response.extend(&header);
-                    let question = get_question(&buf[12..size]).to_bytes();
-                    response.extend(&question);
-                    let answer = get_answer(&buf[12..size]).to_bytes();
-                    response.extend(&answer);
+                    let header = get_header(&buf[..12]);
+                    let question_count = header.qdcount;
 
-                    set_response_bits(&mut response);
+                    let mut questions = Vec::new();
+                    let mut offset = 0;
+                    for _ in 0..question_count {
+                        let (question, consumed) = get_question(&buf, 12 + offset);
+                        questions.push(question);
+                        offset += consumed;
+                    }
+                    response.extend(&header.to_bytes());
+                    for question in &questions {
+                        response.extend(&question.to_bytes());
+                    }
+                    for question in &questions {
+                        let answer = DNSAnswer {
+                            name: question.name.clone(),
+                            rtype: question.qtype,
+                            rclass: question.qclass,
+                            ttl: 60,
+                            length: 4,
+                            rdata: 0x7f000001,
+                        };
+                        response.extend(&answer.to_bytes());
+                    }
+
+                    set_response_bits(&mut response, question_count);
 
                     udp_socket
                         .send_to(&response, source)
