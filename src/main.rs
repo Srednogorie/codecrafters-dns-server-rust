@@ -115,7 +115,13 @@ fn get_question(buf: &[u8]) -> (DNSQuestion, usize) {
 }
 
 fn get_answer(buf: &[u8]) -> DNSAnswer {
-    
+    DNSAnswer {
+        name: buf.to_vec(),
+        rtype: u16::from_be_bytes([buf[0], buf[1]]),
+        rclass: u16::from_be_bytes([buf[2], buf[3]]),
+        ttl: u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),
+        rdata: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+    }
 }
 
 fn set_response_bits(response: &mut [u8]) {
