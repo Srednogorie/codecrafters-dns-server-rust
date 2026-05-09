@@ -47,13 +47,41 @@ impl DNSQuestion {
     }
 }
 
-struct DNSResponse {
-    header: DNSHeader,
-    question: DNSQuestion,
-    // answers: Vec<DNSAnswer>,
-    // authorities: Vec<DNSAuthority>,
-    // additional: Vec<DNSAdditional>,
+#[derive(Debug)]
+struct DNSAnswer {
+    name: Vec<u8>,
+    rtype: u16,
+    rclass: u16,
+    ttl: u32,
+    rdata: u32,
 }
+impl DNSAnswer {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = self.name.clone();
+        bytes.push(0);
+        bytes.push((self.rtype >> 8) as u8);
+        bytes.push(self.rtype as u8);
+        bytes.push((self.rclass >> 8) as u8);
+        bytes.push(self.rclass as u8);
+        bytes.push((self.ttl >> 24) as u8);
+        bytes.push((self.ttl >> 16) as u8);
+        bytes.push((self.ttl >> 8) as u8);
+        bytes.push(self.ttl as u8);
+        bytes.push((self.rdata >> 24) as u8);
+        bytes.push((self.rdata >> 16) as u8);
+        bytes.push((self.rdata >> 8) as u8);
+        bytes.push(self.rdata as u8);
+        bytes
+    }
+}
+
+// struct DNSResponse {
+//     header: DNSHeader,
+//     question: DNSQuestion,
+//     // answers: Vec<DNSAnswer>,
+//     // authorities: Vec<DNSAuthority>,
+//     // additional: Vec<DNSAdditional>,
+// }
 
 fn get_header(buf: &[u8]) -> DNSHeader {
     let header = DNSHeader {
@@ -67,21 +95,27 @@ fn get_header(buf: &[u8]) -> DNSHeader {
     header
 }
 
-fn get_question(buf: &[u8]) -> DNSQuestion {
+fn get_question(buf: &[u8]) -> (DNSQuestion, usize) {
     if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
         let content = &buf[..null_pos];
-        DNSQuestion {
+        let question = DNSQuestion {
             name: content.to_vec(),
             qtype: u16::from_be_bytes([buf[null_pos + 1], buf[null_pos + 2]]),
             qclass: u16::from_be_bytes([buf[null_pos + 3], buf[null_pos + 4]]),
-        }
+        };
+        (question, null_pos + 5)
     } else {
-        DNSQuestion {
+        let question = DNSQuestion {
             name: buf.to_vec(),
             qtype: 0,
             qclass: 0,
-        }
+        };
+        (question, 0)
     }
+}
+
+fn get_answer(buf: &[u8]) -> DNSAnswer {
+    
 }
 
 fn set_response_bits(response: &mut [u8]) {
@@ -108,8 +142,10 @@ fn main() {
                 if buf[2] & 0x80 == 0 {
                     let header = get_header(&buf[..12]).to_bytes();
                     response.extend(&header);
-                    let question = get_question(&buf[12..size]).to_bytes();
-                    response.extend(&question);
+                    let (question, offset) = get_question(&buf[12..size]);
+                    response.extend(&question.to_bytes());
+                    let answer = get_answer(&buf[12 + offset..size]).to_bytes();
+                    response.extend(&answer);
 
                     set_response_bits(&mut response);
 
