@@ -150,8 +150,8 @@ fn main() {
                     response.extend(&header);
                     let (question, offset) = get_question(&buf[12..size]);
                     response.extend(&question.to_bytes());
-                    let answer = get_answer(&buf[12 + offset..size]).to_bytes();
-                    response.extend(&answer);
+                    // let answer = get_answer(&buf[12 + offset..size]).to_bytes();
+                    // response.extend(&answer);
 
                     set_response_bits(&mut response);
 
