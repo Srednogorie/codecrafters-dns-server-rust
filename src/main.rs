@@ -29,60 +29,98 @@ impl DNSHeader {
     }
 }
 
+#[derive(Debug)]
+struct DNSQuestion {
+    name: Vec<u8>,
+    qtype: u16,
+    qclass: u16,
+}
+impl DNSQuestion {
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = self.name.clone();
+        bytes.push(0);
+        bytes.push((self.qtype >> 8) as u8);
+        bytes.push(self.qtype as u8);
+        bytes.push((self.qclass >> 8) as u8);
+        bytes.push(self.qclass as u8);
+        bytes
+    }
+}
+
 struct DNSResponse {
     header: DNSHeader,
-    // questions: Vec<DNSQuestion>,
+    question: DNSQuestion,
     // answers: Vec<DNSAnswer>,
     // authorities: Vec<DNSAuthority>,
     // additional: Vec<DNSAdditional>,
+}
+
+fn get_header(buf: &[u8]) -> DNSHeader {
+    let header = DNSHeader {
+        id: u16::from_be_bytes([buf[0], buf[1]]),
+        flags: u16::from_be_bytes([buf[2], buf[3]]),
+        qdcount: u16::from_be_bytes([buf[4], buf[5]]),
+        ancount: u16::from_be_bytes([buf[6], buf[7]]),
+        nscount: u16::from_be_bytes([buf[8], buf[9]]),
+        arcount: u16::from_be_bytes([buf[10], buf[11]]),
+    };
+    header
+}
+
+fn get_question(buf: &[u8]) -> DNSQuestion {
+    if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
+        let content = &buf[..null_pos];
+        DNSQuestion {
+            name: content.to_vec(),
+            qtype: u16::from_be_bytes([buf[null_pos + 1], buf[null_pos + 2]]),
+            qclass: u16::from_be_bytes([buf[null_pos + 3], buf[null_pos + 4]]),
+        }
+    } else {
+        DNSQuestion {
+            name: buf.to_vec(),
+            qtype: 0,
+            qclass: 0,
+        }
+    }
+}
+
+fn set_response_bits(response: &mut [u8]) {
+    // Set QR bit to 1 (response) and RCODE to 0 (no error)
+    response[2] |= 0x80;
+    response[3] &= 0xF0;
+    // Set QDCOUNT to 1 (one question)
+    response[4] &= 0xFF;
+    response[5] |= 0x01;
 }
 
 fn main() {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
 
-    // TODO: Uncomment the code below to pass the first stage
     let udp_socket = UdpSocket::bind("127.0.0.1:2053").expect("Failed to bind to address");
     let mut buf = [0; 512];
     
     loop {
         match udp_socket.recv_from(&mut buf) {
             Ok((size, source)) => {
+                let mut response = vec![];
                 // Check if the request is a DNS query
                 if buf[2] & 0x80 == 0 {
-                    let header = DNSHeader {
-                        id: u16::from_be_bytes([buf[0], buf[1]]),
-                        flags: u16::from_be_bytes([buf[2], buf[3]]),
-                        qdcount: u16::from_be_bytes([buf[5], buf[6]]),
-                        ancount: u16::from_be_bytes([buf[7], buf[8]]),
-                        nscount: u16::from_be_bytes([buf[9], buf[10]]),
-                        arcount: u16::from_be_bytes([buf[11], buf[12]]),
-                    };
-                    println!("DNS query: {:?}", header);
-                    let response = DNSResponse {
-                        header,
-                        // questions: vec![],
-                        // answers: vec![],
-                        // authorities: vec![],
-                        // additional: vec![],
-                    };
-                    let mut response_bytes = response.header.to_bytes();
-                    // Set QR bit to 1 (response) and RCODE to 0 (no error)
-                    response_bytes[2] |= 0x80;
-                    response_bytes[3] &= 0xF0;
-                    println!("Response len: {}", response_bytes.len());
+                    let header = get_header(&buf[..12]).to_bytes();
+                    response.extend(&header);
+                    let question = get_question(&buf[12..size]).to_bytes();
+                    response.extend(&question);
+
+                    set_response_bits(&mut response);
+
                     udp_socket
-                        .send_to(&response_bytes, source)
+                        .send_to(&response, source)
                         .expect("Failed to send response");
+
                 } else {
                     println!("Received a non-DNS query");
                     continue;
                 }
-                // println!("Received {} bytes from {}", size, source);
-                // let response = [];
-                // udp_socket
-                //     .send_to(&response, source)
-                //     .expect("Failed to send response");
             }
             Err(e) => {
                 eprintln!("Error receiving data: {}", e);
