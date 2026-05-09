@@ -140,9 +140,9 @@ fn get_answer(buf: &[u8]) -> DNSAnswer {
 }
 
 fn set_response_bits(response: &mut [u8]) {
-    // Set QR bit to 1 (response) and RCODE to 0 (no error)
+    // Set QR bit to 1 (response) and RCODE to 4 (not implemented)
     response[2] |= 0x80;
-    response[3] &= 0xF0;
+    response[3] |= 0x04;
     // Set QDCOUNT to 1 (one question)
     response[4] &= 0xFF;
     response[5] |= 0x01;
