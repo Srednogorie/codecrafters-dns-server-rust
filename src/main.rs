@@ -53,6 +53,7 @@ struct DNSAnswer {
     rtype: u16,
     rclass: u16,
     ttl: u32,
+    length: u16,
     rdata: u32,
 }
 impl DNSAnswer {
@@ -67,6 +68,8 @@ impl DNSAnswer {
         bytes.push((self.ttl >> 16) as u8);
         bytes.push((self.ttl >> 8) as u8);
         bytes.push(self.ttl as u8);
+        bytes.push((self.length >> 8) as u8);
+        bytes.push(self.length as u8);
         bytes.push((self.rdata >> 24) as u8);
         bytes.push((self.rdata >> 16) as u8);
         bytes.push((self.rdata >> 8) as u8);
@@ -95,32 +98,44 @@ fn get_header(buf: &[u8]) -> DNSHeader {
     header
 }
 
-fn get_question(buf: &[u8]) -> (DNSQuestion, usize) {
+fn get_question(buf: &[u8]) -> DNSQuestion {
     if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
-        let content = &buf[..null_pos];
-        let question = DNSQuestion {
-            name: content.to_vec(),
+        let name = &buf[..null_pos];
+        DNSQuestion {
+            name: name.to_vec(),
             qtype: u16::from_be_bytes([buf[null_pos + 1], buf[null_pos + 2]]),
             qclass: u16::from_be_bytes([buf[null_pos + 3], buf[null_pos + 4]]),
-        };
-        (question, null_pos + 5)
+        }
     } else {
-        let question = DNSQuestion {
+        DNSQuestion {
             name: buf.to_vec(),
             qtype: 0,
             qclass: 0,
-        };
-        (question, 0)
+        }
     }
 }
 
 fn get_answer(buf: &[u8]) -> DNSAnswer {
-    DNSAnswer {
-        name: buf.to_vec(),
-        rtype: u16::from_be_bytes([buf[0], buf[1]]),
-        rclass: u16::from_be_bytes([buf[2], buf[3]]),
-        ttl: u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),
-        rdata: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
+    if let Some(null_pos) = buf.iter().position(|&b| b == 0) {
+        let name = &buf[..null_pos];
+        let ip = [127, 0, 0, 1];
+        DNSAnswer {
+            name: name.to_vec(),
+            rtype: 1,
+            rclass: 1,
+            ttl: 60,
+            length: ip.len() as u16,
+            rdata: u32::from_be_bytes(ip)
+        }
+    } else {
+        DNSAnswer {
+            name: buf.to_vec(),
+            rtype: 0,
+            rclass: 0,
+            ttl: 0,
+            length: 0,
+            rdata: 0,
+        }
     }
 }
 
@@ -131,6 +146,9 @@ fn set_response_bits(response: &mut [u8]) {
     // Set QDCOUNT to 1 (one question)
     response[4] &= 0xFF;
     response[5] |= 0x01;
+    // Set ANCOUNT to 1 (one answer)
+    response[6] &= 0xFF;
+    response[7] |= 0x01;
 }
 
 fn main() {
@@ -148,10 +166,10 @@ fn main() {
                 if buf[2] & 0x80 == 0 {
                     let header = get_header(&buf[..12]).to_bytes();
                     response.extend(&header);
-                    let (question, offset) = get_question(&buf[12..size]);
-                    response.extend(&question.to_bytes());
-                    // let answer = get_answer(&buf[12 + offset..size]).to_bytes();
-                    // response.extend(&answer);
+                    let question = get_question(&buf[12..size]).to_bytes();
+                    response.extend(&question);
+                    let answer = get_answer(&buf[12..size]).to_bytes();
+                    response.extend(&answer);
 
                     set_response_bits(&mut response);
 
